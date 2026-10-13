@@ -1,9 +1,7 @@
-name: Enterprise CI Pipeline 
+```yaml
+name: Enterprise CI Pipeline
 
- 
-# ─────────────────────────────────────────────
 # Trigger
-# ─────────────────────────────────────────────
 on:
   push:
     branches:
@@ -33,9 +31,7 @@ on:
         default: true
         type: boolean
 
-# ─────────────────────────────────────────────
-# Default Permissions (Least Privilege)
-# ─────────────────────────────────────────────
+# Permissions
 permissions:
   contents: read
   security-events: write
@@ -44,26 +40,20 @@ permissions:
   packages: write
   id-token: write
 
-# ─────────────────────────────────────────────
-# Prevent Parallel Builds
-# ─────────────────────────────────────────────
+# Prevent parallel builds
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# ─────────────────────────────────────────────
-# Global Environment Variables
-# ─────────────────────────────────────────────
+# Global environment variables
 env:
   NODE_VERSION: "22"
-  IMAGE_NAME:  ${{ secrets.DOCKER_USER }}/zomato_new
+  IMAGE_NAME: rahamshaik/zomato_new
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
 
-  # ───────────────────────────────────────────
   # JOB 1: Build React Application
-  # ───────────────────────────────────────────
   build:
     name: Build React Application
     runs-on: ubuntu-latest
@@ -73,7 +63,6 @@ jobs:
         shell: bash
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -127,6 +116,7 @@ jobs:
         with:
           name: coverage-report
           path: coverage
+          if-no-files-found: ignore
 
       - name: Build Application
         run: npm link
@@ -136,22 +126,20 @@ jobs:
         with:
           name: artifact-1
           path: package*
+          if-no-files-found: ignore
 
-  # ───────────────────────────────────────────
   # JOB 2: Security & Docker Validation
-  # ───────────────────────────────────────────
   security:
     name: Security & Docker Validation
     runs-on: ubuntu-latest
     needs: build
     timeout-minutes: 30
-  
+
     permissions:
       contents: read
       security-events: write
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -160,11 +148,6 @@ jobs:
         with:
           name: artifact-1
           path: .
-
-      # - name: Run Gitleaks
-      #   uses: gitleaks/gitleaks-action@v3
-      #   env:
-      #     NEW_GITHUB_TOKEN: ${{ secrets.GT }}
 
       - name: Install Trivy
         uses: aquasecurity/setup-trivy@e07451d2e059ed86c2870430ea286b3a9e0bf241
@@ -189,7 +172,7 @@ jobs:
           find . -name "*.sarif"
 
       - name: Upload Trivy Scan Results
-        if: always()
+        if: always() && hashFiles('trivy-fs.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ./trivy-fs.sarif
@@ -210,6 +193,14 @@ jobs:
           key: ${{ runner.os }}-buildx-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-buildx-
+
+      - name: Validate Docker Image Name
+        run: |
+          if [[ -z "$IMAGE_NAME" || "$IMAGE_NAME" == /* ]]; then
+            echo "ERROR: Invalid Docker image name: $IMAGE_NAME"
+            exit 1
+          fi
+          echo "Docker image: $IMAGE_NAME:$IMAGE_TAG"
 
       - name: Build Docker Image
         uses: docker/build-push-action@v6
@@ -234,31 +225,32 @@ jobs:
       - name: Update Docker Cache
         run: |
           rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          if [ -d /tmp/.buildx-cache-new ]; then
+            mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          fi
 
       - name: Verify Docker Image
         run: |
           docker images
-          docker image inspect \
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker image inspect "${IMAGE_NAME}:${IMAGE_TAG}"
 
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
-           username: ${{ secrets.DOCKER_USER }}
-           password: ${{ secrets.DOCKER_PASSWORD }}
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Push Docker Image
         run: |
-            docker push ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-            docker push ${{ env.IMAGE_NAME }}:latest
+          docker push "${IMAGE_NAME}:${IMAGE_TAG}"
+          docker push "${IMAGE_NAME}:latest"
 
       - name: Smoke Test Container
         run: |
           docker run -d \
             --name zomato-test \
             -p 3000:3000 \
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            "${IMAGE_NAME}:${IMAGE_TAG}"
           sleep 20
           docker ps
           docker logs zomato-test
@@ -266,4 +258,4 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker rm -f zomato-test || true
-
+```
