@@ -1,296 +1,296 @@
 
-001 | name: Enterprise CI Pipeline
-002 |
-003 | # ─────────────────────────────────────────────
-004 | # Trigger
-005 | # ─────────────────────────────────────────────
-006 | on:
-007 |   push:
-008 |     branches:
-009 |       - main
-010 |       - master
-011 |       - develop
-012 |       - feature/**
-013 |   pull_request:
-014 |     branches:
-015 |       - main
-016 |       - master
-017 |       - develop
-018 |   workflow_dispatch:
-019 |     inputs:
-020 |       environment:
-021 |         description: 'Target environment'
-022 |         required: true
-023 |         default: 'development'
-024 |         type: choice
-025 |         options:
-026 |           - development
-027 |           - staging
-028 |           - production
-029 |       deploy_tests:
-030 |         description: 'Run integration tests?'
-031 |         required: false
-032 |         default: true
-033 |         type: boolean
-034 |
-035 | # ─────────────────────────────────────────────
-036 | # Default Permissions (Least Privilege)
-037 | # ─────────────────────────────────────────────
-038 | permissions:
-039 |   contents: read
-040 |   security-events: write
-041 |   actions: read
-042 |   checks: write
-043 |   packages: write
-044 |   id-token: write
-045 |
-046 | # ─────────────────────────────────────────────
-047 | # Prevent Parallel Builds
-048 | # ─────────────────────────────────────────────
-049 | concurrency:
-050 |   group: ci-${{ github.ref }}
-051 |   cancel-in-progress: true
-052 |
-053 | # ─────────────────────────────────────────────
-054 | # Global Environment Variables
-055 | # ─────────────────────────────────────────────
-056 | env:
-057 |   NODE_VERSION: "22"
-058 |   IMAGE_TAG: ${{ github.sha }}
-059 |
-060 | jobs:
-061 |
-062 |   # ───────────────────────────────────────────
-063 |   # JOB 1: Build React Application
-064 |   # ───────────────────────────────────────────
-065 |   build:
-066 |     name: Build React Application
-067 |     runs-on: ubuntu-latest
-068 |     timeout-minutes: 20
-069 |     defaults:
-070 |       run:
-071 |         shell: bash
-072 |
-073 |     steps:
-074 |
-075 |       - name: Checkout Repository
-076 |         uses: actions/checkout@v4
-077 |
-078 |       - name: Setup Node.js
-079 |         uses: actions/setup-node@v4
-080 |         with:
-081 |           node-version: ${{ env.NODE_VERSION }}
-082 |           cache: npm
-083 |
-084 |       - name: Display Versions
-085 |         run: |
-086 |           node --version
-087 |           npm --version
-088 |
-089 |       - name: Restore npm Cache
-090 |         uses: actions/cache@v4
-091 |         with:
-092 |           path: ~/.npm
-093 |           key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json') }}
-094 |           restore-keys: |
-095 |             ${{ runner.os }}-npm-
-096 |
-097 |       - name: Initialize CodeQL
-098 |         uses: github/codeql-action/init@v3
-099 |         with:
-100 |           languages: javascript
-101 |
-102 |       - name: Autobuild
-103 |         uses: github/codeql-action/autobuild@v3
-104 |
-105 |       - name: Perform CodeQL Analysis
-106 |         uses: github/codeql-action/analyze@v3
-107 |
-108 |       - name: Install Dependencies
-109 |         run: npm ci
-110 |
-111 |       - name: Verify Installed Packages
-112 |         run: npm ls || true
-113 |
-114 |       - name: Run ESLint
-115 |         run: npm run lint
-116 |
-117 |       - name: Run Unit Tests
-118 |         env:
-119 |           CI: true
-120 |         run: echo "code is tested"
-121 |
-122 |       - name: Upload Coverage Report
-123 |         if: always()
-124 |         uses: actions/upload-artifact@v4
-125 |         with:
-126 |           name: coverage-report
-127 |           path: coverage
-128 |
-129 |       - name: Build Application
-130 |         run: npm link
-131 |
-132 |       - name: Artifact Upload
-133 |         uses: actions/upload-artifact@v4
-134 |         with:
-135 |           name: artifact-1
-136 |           path: package*
-137 |
-138 |   # ───────────────────────────────────────────
-139 |   # JOB 2: Security & Docker Validation
-140 |   # ───────────────────────────────────────────
-141 |   security:
-142 |     name: Security & Docker Validation
-143 |     runs-on: ubuntu-latest
-144 |     needs: build
-145 |     timeout-minutes: 30
-146 |
-147 |     permissions:
-148 |       contents: read
-149 |       security-events: write
-150 |
-151 |     steps:
-152 |
-153 |       - name: Checkout Repository
-154 |         uses: actions/checkout@v4
-155 |
-156 |       - name: Download React Build
-157 |         uses: actions/download-artifact@v4
-158 |         with:
-159 |           name: artifact-1
-160 |           path: .
-161 |
-162 |       # - name: Run Gitleaks
-163 |       #   uses: gitleaks/gitleaks-action@v3
-164 |       #   env:
-165 |       #     NEW_GITHUB_TOKEN: ${{ secrets.GT }}
-166 |
-167 |       - name: Install Trivy
-168 |         uses: aquasecurity/setup-trivy@e07451d2e059ed86c2870430ea286b3a9e0bf241
-169 |
-170 |       - name: Verify Trivy
-171 |         run: trivy --version
-172 |
-173 |       - name: Run Trivy Filesystem Scan
-174 |         continue-on-error: true
-175 |         run: |
-176 |           trivy fs \
-177 |             --format sarif \
-178 |             --output trivy-fs.sarif \
-179 |             --severity CRITICAL,HIGH \
-180 |             --ignore-unfixed \
-181 |             .
-182 |
-183 |       - name: Verify SARIF
-184 |         run: |
-185 |           pwd
-186 |           ls -la
-187 |           find . -name "*.sarif"
-188 |
-189 |       - name: Upload Trivy Scan Results
-190 |         if: always()
-191 |         uses: github/codeql-action/upload-sarif@v3
-192 |         with:
-193 |           sarif_file: ./trivy-fs.sarif
-194 |
-195 |       - name: Lint Dockerfile
-196 |         uses: hadolint/hadolint-action@v3.1.0
-197 |         with:
-198 |           dockerfile: Dockerfile
-199 |           failure-threshold: warning
-200 |
-201 |       - name: Set up Docker Buildx
-202 |         uses: docker/setup-buildx-action@v3
-203 |
-204 |       # FIX: Validate username and create a valid image name
-205 |       - name: Validate and Set Docker Image Name
-206 |         id: image
-207 |         env:
-208 |           DOCKER_USER: ${{ secrets.DOCKER_USER }}
-209 |         run: |
-210 |           if [ -z "$DOCKER_USER" ]; then
-211 |             echo "::error::DOCKER_USER secret is missing or empty."
-212 |             echo "Configure it in Settings > Secrets and variables > Actions."
-213 |             exit 1
-214 |           fi
-215 |
-216 |           if ! echo "$DOCKER_USER" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*$'; then
-217 |             echo "::error::DOCKER_USER has an invalid username format."
-218 |             exit 1
-219 |           fi
-220 |
-221 |           IMAGE_NAME="${DOCKER_USER,,}/zomato_new"
-222 |           echo "name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
-223 |           echo "Docker image name configured successfully."
-224 |
-225 |       - name: Restore Docker Cache
-226 |         uses: actions/cache@v4
-227 |         with:
-228 |           path: /tmp/.buildx-cache
-229 |           key: ${{ runner.os }}-buildx-${{ github.sha }}
-230 |           restore-keys: |
-231 |             ${{ runner.os }}-buildx-
-232 |
-233 |       - name: Build Docker Image
-234 |         uses: docker/build-push-action@v6
-235 |         with:
-236 |           context: .
-237 |           file: Dockerfile
-238 |           push: false
-239 |           tags: |
-240 |             ${{ steps.image.outputs.name }}:${{ env.IMAGE_TAG }}
-241 |             ${{ steps.image.outputs.name }}:latest
-242 |           cache-from: type=local,src=/tmp/.buildx-cache
-243 |           cache-to: type=local,dest=/tmp/.buildx-cache-new
-244 |           provenance: false
-245 |           load: true
-246 |           labels: |
-247 |             org.opencontainers.image.title=Zomato
-248 |             org.opencontainers.image.source=${{ github.repository }}
-249 |             org.opencontainers.image.version=${{ github.sha }}
-250 |             org.opencontainers.image.revision=${{ github.sha }}
-251 |             org.opencontainers.image.created=${{ github.run_id }}
-252 |
-253 |       - name: Update Docker Cache
-254 |         run: |
-255 |           rm -rf /tmp/.buildx-cache
-256 |           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
-257 |
-258 |       - name: Verify Docker Image
-259 |         env:
-260 |           IMAGE_NAME: ${{ steps.image.outputs.name }}
-261 |           IMAGE_TAG: ${{ env.IMAGE_TAG }}
-262 |         run: |
-263 |           docker images
-264 |           docker image inspect "$IMAGE_NAME:$IMAGE_TAG"
-265 |
-266 |       - name: Login to DockerHub
-267 |         uses: docker/login-action@v3
-268 |         with:
-269 |           username: ${{ secrets.DOCKER_USER }}
-270 |           password: ${{ secrets.DOCKER_PASSWORD }}
-271 |
-272 |       - name: Push Docker Image
-273 |         env:
-274 |           IMAGE_NAME: ${{ steps.image.outputs.name }}
-275 |           IMAGE_TAG: ${{ env.IMAGE_TAG }}
-276 |         run: |
-277 |           docker push "$IMAGE_NAME:$IMAGE_TAG"
-278 |           docker push "$IMAGE_NAME:latest"
-279 |
-280 |       - name: Smoke Test Container
-281 |         env:
-282 |           IMAGE_NAME: ${{ steps.image.outputs.name }}
-283 |           IMAGE_TAG: ${{ env.IMAGE_TAG }}
-284 |         run: |
-285 |           docker run -d \
-286 |             --name zomato-test \
-287 |             -p 3000:3000 \
-288 |             "$IMAGE_NAME:$IMAGE_TAG"
-289 |           sleep 20
-290 |           docker ps
-291 |           docker logs zomato-test
-292 |
-293 |       - name: Cleanup
-294 |         if: always()
-295 |         run: docker rm -f zomato-test || true
+name: Enterprise CI Pipeline
+
+# ─────────────────────────────────────────────
+# Trigger
+# ─────────────────────────────────────────────
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+      - feature/**
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+      deploy_tests:
+        description: 'Run integration tests?'
+        required: false
+        default: true
+        type: boolean
+
+# ─────────────────────────────────────────────
+# Default Permissions (Least Privilege)
+# ─────────────────────────────────────────────
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  checks: write
+  packages: write
+  id-token: write
+
+# ─────────────────────────────────────────────
+# Prevent Parallel Builds
+# ─────────────────────────────────────────────
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# ─────────────────────────────────────────────
+# Global Environment Variables
+# ─────────────────────────────────────────────
+env:
+  NODE_VERSION: "22"
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+
+  # ───────────────────────────────────────────
+  # JOB 1: Build React Application
+  # ───────────────────────────────────────────
+  build:
+    name: Build React Application
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Display Versions
+        run: |
+          node --version
+          npm --version
+
+      - name: Restore npm Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Verify Installed Packages
+        run: npm ls || true
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run Unit Tests
+        env:
+          CI: true
+        run: echo "code is tested"
+
+      - name: Upload Coverage Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage
+
+      - name: Build Application
+        run: npm link
+
+      - name: Artifact Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-1
+          path: package*
+
+  # ───────────────────────────────────────────
+  # JOB 2: Security & Docker Validation
+  # ───────────────────────────────────────────
+  security:
+    name: Security & Docker Validation
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download React Build
+        uses: actions/download-artifact@v4
+        with:
+          name: artifact-1
+          path: .
+
+      # - name: Run Gitleaks
+      #   uses: gitleaks/gitleaks-action@v3
+      #   env:
+      #     NEW_GITHUB_TOKEN: ${{ secrets.GT }}
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@e07451d2e059ed86c2870430ea286b3a9e0bf241
+
+      - name: Verify Trivy
+        run: trivy --version
+
+      - name: Run Trivy Filesystem Scan
+        continue-on-error: true
+        run: |
+          trivy fs \
+            --format sarif \
+            --output trivy-fs.sarif \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            .
+
+      - name: Verify SARIF
+        run: |
+          pwd
+          ls -la
+          find . -name "*.sarif"
+
+      - name: Upload Trivy Scan Results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ./trivy-fs.sarif
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Validate username and create a valid image name
+      - name: Validate and Set Docker Image Name
+        id: image
+        env:
+          DOCKER_USER: ${{ secrets.DOCKER_USER }}
+        run: |
+          if [ -z "$DOCKER_USER" ]; then
+            echo "::error::DOCKER_USER secret is missing or empty."
+            echo "Configure it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+          if ! echo "$DOCKER_USER" | grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*$'; then
+            echo "::error::DOCKER_USER has an invalid username format."
+            exit 1
+          fi
+
+          IMAGE_NAME="${DOCKER_USER,,}/zomato_new"
+          echo "name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "Docker image name configured successfully."
+
+      - name: Restore Docker Cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ env.IMAGE_TAG }}
+            ${{ steps.image.outputs.name }}:latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new
+          provenance: false
+          load: true
+          labels: |
+            org.opencontainers.image.title=Zomato
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.version=${{ github.sha }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.run_id }}
+
+      - name: Update Docker Cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Verify Docker Image
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          docker images
+          docker image inspect "$IMAGE_NAME:$IMAGE_TAG"
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push Docker Image
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          docker push "$IMAGE_NAME:$IMAGE_TAG"
+          docker push "$IMAGE_NAME:latest"
+
+      - name: Smoke Test Container
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          docker run -d \
+            --name zomato-test \
+            -p 3000:3000 \
+            "$IMAGE_NAME:$IMAGE_TAG"
+          sleep 20
+          docker ps
+          docker logs zomato-test
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f zomato-test || true
